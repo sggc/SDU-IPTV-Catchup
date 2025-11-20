@@ -1,143 +1,120 @@
 name: Update Playlist Files
 
 on:
-  push:
-    paths:
-      - 'https://raw.githubusercontent.com/sggc/SDU-IPTV-NEW/refs/heads/main/playlist.m3u'
-    branches: [ main ]
   schedule:
-    - cron: '*/15 * * * *'  # 每15分钟运行一次
+    - cron: '*/15 * * * *'
   workflow_dispatch:
 
 jobs:
-  check-and-update:
+  update-playlists:
     runs-on: ubuntu-latest
     
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
       with:
-        fetch-depth: 0
-    
-    - name: Check if source file changed
-      id: check_changes
+        token: ${{ secrets.GITHUB_TOKEN }}
+        
+    - name: Setup environment
       run: |
-        if git diff --name-only HEAD~1 HEAD | grep -q "original-playlist.m3u"; then
-          echo "changes_detected=true" >> $GITHUB_OUTPUT
-          echo "检测到源文件变化，继续处理..."
+        echo "开始播放列表更新流程..."
+        echo "时间: $(date)"
+        
+    - name: Download source playlist
+      id: download
+      run: |
+        echo "正在下载源文件..."
+        if curl -s -f -o source.m3u "https://raw.githubusercontent.com/sggc/SDU-IPTV-NEW/refs/heads/main/playlist.m3u"; then
+          file_size=$(wc -c < source.m3u)
+          file_lines=$(wc -l < source.m3u)
+          echo "下载成功 - 大小: ${file_size} 字节, 行数: ${file_lines}"
+          echo "download_status=success" >> $GITHUB_OUTPUT
         else
-          echo "changes_detected=false" >> $GITHUB_OUTPUT
-          echo "源文件无变化，跳过处理"
+          echo "下载失败"
+          echo "download_status=failed" >> $GITHUB_OUTPUT
+          exit 1
         fi
-    
-    - name: Process playlist files (preserve format)
-      if: steps.check_changes.outputs.changes_detected == 'true'
+        
+    - name: Process playlists
+      if: steps.download.outputs.download_status == 'success'
       run: |
-        # 创建处理脚本，严格保持原始格式
-        cat > process_playlist.py << 'EOF'
-        #!/usr/bin/env python3
+        echo "开始处理播放列表..."
+        
+        # 创建处理脚本
+        cat > process.py << 'EOF'
         import re
+        import sys
         
-        def process_playlists():
+        try:
             # 读取源文件
-            with open('original-playlist.m3u', 'r', encoding='utf-8') as f:
-                lines = f.readlines()
+            with open('source.m3u', 'r', encoding='utf-8') as f:
+                original = f.read()
             
-            # 处理生成两个版本
-            catchup_lines = process_catchup_version(lines)
-            rtp_lines = process_rtp_version(catchup_lines)
+            print(f"读取源文件: {len(original)} 字符")
             
-            # 写入文件，保持原始换行符
-            with open('playlist-catchup.m3u', 'w', encoding='utf-8', newline='') as f:
-                f.writelines(catchup_lines)
+            # 第一步：生成 catchup 版本
+            def update_catchup(match):
+                base_url = match.group(1)
+                return f'{base_url}?tvdr=${{(b)yyyyMMddHHmmss}}GMT-${{(e)yyyyMMddHHmmss}}GMT&r2h-seek-offset=-28800"'
             
-            with open('playlist-rtp.m3u', 'w', encoding='utf-8', newline='') as f:
-                f.writelines(rtp_lines)
+            catchup_content = re.sub(
+                r'(catchup-source="[^"]+?)(?:\?tvdr=\{utc:YmdHMS\}GMT-\{utcend:YmdHMS\}GMT)?"',
+                update_catchup,
+                original
+            )
             
-            print("✓ 播放列表文件已成功生成，格式保持不变")
-        
-        def process_catchup_version(lines):
-            """处理回看版本，严格保持格式"""
-            processed_lines = []
-            i = 0
+            with open('playlist-catchup.m3u', 'w', encoding='utf-8') as f:
+                f.write(catchup_content)
             
-            while i < len(lines):
-                line = lines[i]
-                
-                # 处理EXTINF行
-                if line.startswith('#EXTINF:'):
-                    # 只修改catchup-source中的时间参数，保持其他所有内容不变
-                    if 'catchup-source=' in line:
-                        # 替换时间参数格式
-                        new_line = re.sub(
-                            r'(\?tvdr=)\{utc:YmdHMS\}GMT-\{utcend:YmdHMS\}GMT',
-                            r'\1${(b)yyyyMMddHHmmss}GMT-${(e)yyyyMMddHHmmss}GMT&r2h-seek-offset=-28800',
-                            line
-                        )
-                        # 如果没有时间参数，添加参数
-                        if new_line == line and '?tvdr=' not in line:
-                            new_line = re.sub(
-                                r'(catchup-source="[^"]+)"',
-                                r'\1?tvdr=${(b)yyyyMMddHHmmss}GMT-${(e)yyyyMMddHHmmss}GMT&r2h-seek-offset=-28800"',
-                                line
-                            )
-                        processed_lines.append(new_line)
-                    else:
-                        processed_lines.append(line)
-                    
-                    # 下一行是URL行，直接保留（格式不变）
-                    i += 1
-                    if i < len(lines) and not lines[i].startswith('#'):
-                        processed_lines.append(lines[i])
-                else:
-                    # 其他行直接保留
-                    processed_lines.append(line)
-                
-                i += 1
+            print("✓ Catchup 版本生成完成")
             
-            return processed_lines
-        
-        def process_rtp_version(lines):
-            """处理RTP版本，严格保持格式"""
-            processed_lines = []
+            # 第二步：生成 RTP 版本  
+            def update_rtsp(match):
+                return f'http://192.168.100.1:5140/rtsp/{match.group(1)}'
             
-            for line in lines:
-                # 替换所有rtsp://为HTTP代理格式，但保持行结构不变
-                if 'rtsp://' in line:
-                    new_line = re.sub(
-                        r'rtsp://([^"\s\r\n]+)',
-                        r'http://192.168.100.1:5140/rtsp/\1',
-                        line
-                    )
-                    processed_lines.append(new_line)
-                else:
-                    processed_lines.append(line)
+            rtp_content = re.sub(
+                r'rtsp://([^"\s\r\n]+)',
+                update_rtsp,
+                catchup_content
+            )
             
-            return processed_lines
-        
-        if __name__ == "__main__":
-            process_playlists()
+            with open('playlist-rtp.m3u', 'w', encoding='utf-8') as f:
+                f.write(rtp_content)
+            
+            print("✓ RTP 版本生成完成")
+            
+            # 统计信息
+            changes = sum(1 for a, b in zip(original, catchup_content) if a != b)
+            print(f"处理完成 - 检测到 {changes} 处修改")
+            
+        except Exception as e:
+            print(f"处理错误: {e}")
+            sys.exit(1)
         EOF
         
-        python process_playlist.py
-    
-    - name: Check for changes in generated files
-      if: steps.check_changes.outputs.changes_detected == 'true'
-      id: check_generated
+        # 执行处理
+        python3 process.py
+        
+    - name: Check and commit changes
+      if: steps.download.outputs.download_status == 'success'
       run: |
-        if git diff --name-only | grep -q "playlist-catchup.m3u\|playlist-rtp.m3u"; then
-          echo "generated_changed=true" >> $GITHUB_OUTPUT
-          echo "生成的文件有变化，准备提交..."
-        else
-          echo "generated_changed=false" >> $GITHUB_OUTPUT
-          echo "生成的文件无变化，无需提交"
-        fi
-    
-    - name: Commit and push changes
-      if: steps.check_changes.outputs.changes_detected == 'true' && steps.check_generated.outputs.generated_changed == 'true'
-      run: |
-        git config --local user.email "action@github.com"
-        git config --local user.name "GitHub Action"
+        echo "检查文件变化..."
         git add playlist-catchup.m3u playlist-rtp.m3u
-        git commit -m "Auto-update playlist files - $(date +'%Y-%m-%d %H:%M:%S')"
-        git push
+        
+        if git diff --staged --quiet; then
+          echo "没有变化需要提交"
+        else
+          echo "提交更改..."
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git commit -m "Auto-update: $(date +'%Y-%m-%d %H:%M')"
+          git push
+          echo "更改已提交"
+        fi
+        
+    - name: Cleanup
+      if: always()
+      run: |
+        # 清理临时文件
+        rm -f source.m3u process.py
+        echo "清理完成"
