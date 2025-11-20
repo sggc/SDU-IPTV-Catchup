@@ -1,88 +1,129 @@
-name: IPTV 自动处理与生成
+name: Update Playlist Files
+
 on:
+  push:
+    paths:
+      - 'original-playlist.m3u'
+    branches: [ main ]
   schedule:
-    - cron: '*/15 * * * *'  # 每15分钟检测一次源文件变化
-  workflow_dispatch:  # 支持手动触发
+    - cron: '*/15 * * * *'  # 每15分钟运行一次
+  workflow_dispatch:
 
 jobs:
-  process-iptv:
+  check-and-update:
     runs-on: ubuntu-latest
+    
     steps:
-      - name: 检出代码
-        uses: actions/checkout@v4
-
-      - name: 检测源文件变化
-        id: check_change
-        run: |
-          # 下载原始源文件
-          curl -sSL "https://raw.githubusercontent.com/sggc/SDU-IPTV-NEW/refs/heads/main/playlist.m3u" -o origin.m3u
-          # 计算文件哈希值（对比是否变化）
-          origin_hash=$(md5sum origin.m3u | awk '{print $1}')
-          last_hash=$(cat .last_hash 2>/dev/null || echo "")
-          # 输出环境变量
-          echo "origin_hash=$origin_hash" >> $GITHUB_ENV
-          echo "last_hash=$last_hash" >> $GITHUB_ENV
-          echo "changed=$([ "$origin_hash" != "$last_hash" ] && echo true || echo false)" >> $GITHUB_ENV
-
-      - name: 处理并生成目标文件（源文件变化时执行）
-        if: env.changed == 'true'
-        run: |
-          # 核心脚本：处理M3U文件（保持一行一组，同时修改回看源和直播源前缀）
-          python3 - << 'EOF'
-          import re
-
-          # 读取原始文件
-          with open("origin.m3u", "r", encoding="utf-8") as f:
-              content = f.read()
-
-          # 定义处理规则
-          catchup_param = "?tvdr=${(b)yyyyMMddHHmmss}GMT-${(e)yyyyMMddHHmmss}GMT&r2h-seek-offset=-28800"
-          rtsp_prefix = "http://192.168.100.1:5140/rtsp/"
-
-          # 正则匹配：一行完整的EXTINF+直播源（格式：EXTINF行\n直播源行 → 合并为一行）
-          pattern = r'(#EXTINF:-1 .*?catchup-source=")(rtsp://)(.*?)(\?tvdr=\{utc:YmdHMS\}GMT-\{utcend:YmdHMS\}GMT")(.*?)\n(rtsp://)(.*?)$'
-
-          def process_match(match):
-              # 提取匹配组
-              prefix1 = match.group(1)
-              rtsp1 = match.group(2)  # 回看源中的rtsp:
-              catchup_path = match.group(3)  # 回看源路径
-              suffix1 = match.group(5)  # EXTINF行末尾（, 频道名）
-              rtsp2 = match.group(6)  # 直播源中的rtsp:
-              live_path = match.group(7)  # 直播源路径
-
-              # 1. 处理回看源：替换rtsp为前缀+参数
-              processed_catchup = f"{prefix1}{rtsp_prefix}{catchup_path}{catchup_param}\"{suffix1}"
-              # 2. 处理直播源：替换为前缀+路径（合并到同一行）
-              processed_live = f"{rtsp_prefix}{live_path}"
-              # 3. 返回合并后的一行（EXTINF+直播源）
-              return f"{processed_catchup} {processed_live}"
-
-          # 第一步：生成 playlist-catchup.m3u（仅修改回看源参数，保持直播源为原始rtsp，一行一组）
-          catchup_content = re.sub(
-              pattern,
-              lambda m: f"{m.group(1)}{m.group(2)}{m.group(3)}{catchup_param}\"{m.group(5)} {m.group(6)}{m.group(7)}",
-              content,
-              flags=re.MULTILINE
-          )
-          with open("playlist-catchup.m3u", "w", encoding="utf-8") as f:
-              f.write(catchup_content)
-
-          # 第二步：生成 playlist-rtp.m3u（回看源+直播源均添加前缀，一行一组）
-          rtp_content = re.sub(pattern, process_match, content, flags=re.MULTILINE)
-          with open("playlist-rtp.m3u", "w", encoding="utf-8") as f:
-              f.write(rtp_content)
-          EOF
-
-      - name: 保存最新哈希值
-        if: env.changed == 'true'
-        run: echo "${{ env.origin_hash }}" > .last_hash
-
-      - name: 提交并推送修改
-        if: env.changed == 'true'
-        run: |
-          git config --global user.name "GitHub Actions"
-          git config --global user.email "actions@github.com"
-          git add playlist-catchup.m3u playlist-rtp.m3u .last_hash
-          git commit -m "Auto update: 源文件变化，同步生成目标M3U文件（一行一组格式）"
-          git push
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0  # 获取完整历史记录以便比较变化
+    
+    - name: Check if source file changed
+      id: check_changes
+      run: |
+        # 检查源文件是否在最近提交中有变化
+        if git diff --name-only HEAD~1 HEAD | grep -q "original-playlist.m3u"; then
+          echo "changes_detected=true" >> $GITHUB_OUTPUT
+          echo "检测到源文件变化，继续处理..."
+        else
+          echo "changes_detected=false" >> $GITHUB_OUTPUT
+          echo "源文件无变化，跳过处理"
+        fi
+    
+    - name: Setup Python for processing
+      if: steps.check_changes.outputs.changes_detected == 'true'
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.x'
+    
+    - name: Process playlist files
+      if: steps.check_changes.outputs.changes_detected == 'true'
+      run: |
+        # 创建内联Python处理脚本
+        cat > process_playlist.py << 'EOF'
+        #!/usr/bin/env python3
+        import re
+        import sys
+        
+        def main():
+            try:
+                with open('original-playlist.m3u', 'r', encoding='utf-8') as f:
+                    content = f.read()
+                
+                # 第一步：生成catchup版本
+                catchup_content = generate_catchup_version(content)
+                with open('playlist-catchup.m3u', 'w', encoding='utf-8') as f:
+                    f.write(catchup_content)
+                print("✓ 已生成 playlist-catchup.m3u")
+                
+                # 第二步：生成RTP版本
+                rtp_content = generate_rtp_version(catchup_content)
+                with open('playlist-rtp.m3u', 'w', encoding='utf-8') as f:
+                    f.write(rtp_content)
+                print("✓ 已生成 playlist-rtp.m3u")
+                
+            except Exception as e:
+                print(f"❌ 处理失败: {e}")
+                sys.exit(1)
+        
+        def generate_catchup_version(content):
+            # 匹配catchup-source中的时间参数并进行替换
+            pattern = r'(catchup-source="[^"]*?)\?tvdr=\{utc:YmdHMS\}GMT-\{utcend:YmdHMS\}GMT'
+            replacement = r'\1?tvdr=${(b)yyyyMMddHHmmss}GMT-${(e)yyyyMMddHHmmss}GMT&r2h-seek-offset=-28800'
+            
+            processed_content = re.sub(pattern, replacement, content)
+            
+            # 处理可能没有?tvdr参数的情况
+            pattern2 = r'(catchup-source="[^"]*?)"'
+            def add_catchup_params(match):
+                url = match.group(1)
+                if '?tvdr=' not in url:
+                    if '?' not in url:
+                        return url + '?tvdr=${(b)yyyyMMddHHmmss}GMT-${(e)yyyyMMddHHmmss}GMT&r2h-seek-offset=-28800"'
+                    else:
+                        return url + '&tvdr=${(b)yyyyMMddHHmmss}GMT-${(e)yyyyMMddHHmmss}GMT&r2h-seek-offset=-28800"'
+                return match.group(0)
+            
+            processed_content = re.sub(pattern2, add_catchup_params, processed_content)
+            return processed_content
+        
+        def generate_rtp_version(content):
+            # 匹配所有的rtsp://URL并进行替换
+            rtsp_pattern = r'rtsp://([^"\s]+)'
+            
+            def replace_rtsp(match):
+                rtsp_path = match.group(1)
+                return f'http://192.168.100.1:5140/rtsp/{rtsp_path}'
+            
+            processed_content = re.sub(rtsp_pattern, replace_rtsp, content)
+            return processed_content
+        
+        if __name__ == "__main__":
+            main()
+        EOF
+        
+        # 执行处理脚本
+        python process_playlist.py
+    
+    - name: Check for changes in generated files
+      if: steps.check_changes.outputs.changes_detected == 'true'
+      id: check_generated
+      run: |
+        # 检查生成的文件是否有变化
+        if git diff --name-only | grep -q "playlist-catchup.m3u\|playlist-rtp.m3u"; then
+          echo "generated_changed=true" >> $GITHUB_OUTPUT
+          echo "生成的文件有变化，准备提交..."
+        else
+          echo "generated_changed=false" >> $GITHUB_OUTPUT
+          echo "生成的文件无变化，无需提交"
+        fi
+    
+    - name: Commit and push changes
+      if: steps.check_changes.outputs.changes_detected == 'true' && steps.check_generated.outputs.generated_changed == 'true'
+      run: |
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        git add playlist-catchup.m3u playlist-rtp.m3u
+        git commit -m "Auto-update playlist files - $(date +'%Y-%m-%d %H:%M:%S')"
+        git push
