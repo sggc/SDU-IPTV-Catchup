@@ -3,7 +3,7 @@ name: Update Playlist Files
 on:
   push:
     paths:
-      - 'original-playlist.m3u'
+      - 'https://raw.githubusercontent.com/sggc/SDU-IPTV-Catchup/refs/heads/main/playlist-catchup.m3u'
     branches: [ main ]
   schedule:
     - cron: '*/15 * * * *'  # 每15分钟运行一次
