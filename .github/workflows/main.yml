@@ -13,90 +13,73 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v4
       
-    - name: Download source files
+    - name: Download source file
       run: |
         echo "下载源播放列表文件..."
         curl -s -o source.m3u "https://raw.githubusercontent.com/sggc/SDU-IPTV-NEW/refs/heads/main/playlist.m3u"
-        curl -s -o multicast-source.m3u "https://raw.githubusercontent.com/plsy1/iptv/refs/heads/main/multicast/multicast-weifang.m3u"
-        echo "下载完成，主文件大小: $(wc -l < source.m3u) 行"
-        echo "多播文件大小: $(wc -l < multicast-source.m3u) 行"
+        echo "下载完成，文件大小: $(wc -l < source.m3u) 行"
         
     - name: Process files
       run: |
         echo "开始处理文件..."
         
-        # 处理单播文件 - unicast-catchup.m3u
-        echo "处理 unicast-catchup.m3u..."
-        cp source.m3u unicast-catchup.m3u
-        sed -i 's|#EXTM3U|#EXTM3U url-tvg="https://raw.githubusercontent.com/plsy1/epg/main/e/seven-days.xml.gz"|' unicast-catchup.m3u
-        sed -i 's|catchup-source="\([^"]*\)?tvdr={utc:YmdHMS}GMT-{utcend:YmdHMS}GMT"|catchup-source="\1?tvdr=${(b)yyyyMMddHHmmss}GMT-${(e)yyyyMMddHHmmss}GMT&r2h-seek-offset=-28800"|g' unicast-catchup.m3u
-        echo "✓ unicast-catchup.m3u 生成完成"
+        # 创建处理脚本
+        cat > process.py << 'EOF'
+        import re
         
-        # 处理单播文件 - unicast-rtp.m3u
-        echo "处理 unicast-rtp.m3u..."
-        cp source.m3u unicast-rtp.m3u
-        sed -i 's|#EXTM3U|#EXTM3U url-tvg="https://raw.githubusercontent.com/plsy1/epg/main/e/seven-days.xml.gz"|' unicast-rtp.m3u
-        sed -i 's|rtsp://|http://192.168.100.1:5140/rtsp/|g' unicast-rtp.m3u
-        echo "✓ unicast-rtp.m3u 生成完成"
+        # 读取源文件
+        with open('source.m3u', 'r', encoding='utf-8') as f:
+            content = f.read()
         
-        # 处理多播文件 - multicast-rtp.m3u
-        echo "处理 multicast-rtp.m3u..."
+        print("处理 catchup 参数...")
+        # 处理 catchup-source 参数
+        catchup_content = re.sub(
+            r'catchup-source="([^"]+?)\?tvdr=\{utc:YmdHMS\}GMT-\{utcend:YmdHMS\}GMT"',
+            r'catchup-source="\1?tvdr=${(b)yyyyMMddHHmmss}GMT-${(e)yyyyMMddHHmmss}GMT&r2h-seek-offset=-28800"',
+            content
+        )
         
-        # 1. 添加EPG信息和处理URL
-        cp multicast-source.m3u multicast-temp1.m3u
-        sed -i 's|#EXTM3U|#EXTM3U url-tvg="https://raw.githubusercontent.com/plsy1/epg/main/e/seven-days.xml.gz"|' multicast-temp1.m3u
-        sed -i 's|catchup-source="rtsp://\([^"]*\)?tvdr={utc:YmdHMS}GMT-{utcend:YmdHMS}GMT"|catchup-source="http://192.168.100.1:5140/rtsp/\1?tvdr=${(b)yyyyMMddHHmmss}GMT-${(e)yyyyMMddHHmmss}GMT&r2h-seek-offset=-28800"|g' multicast-temp1.m3u
-        sed -i 's|http://192.168.0.1:5140/|http://192.168.100.1:5140/|g' multicast-temp1.m3u
+        # 在文件开头添加 url-tvg 属性
+        catchup_content = re.sub(
+            r'^#EXTM3U',
+            r'#EXTM3U url-tvg="https://raw.githubusercontent.com/plsy1/epg/main/e/seven-days.xml.gz"',
+            catchup_content,
+            count=1
+        )
         
-        # 2. 按照规则排序频道
-        # 提取文件头（非频道行）
-        head -n 10 multicast-temp1.m3u > multicast-header.m3u
+        # 写入 catchup 文件（重命名为 unicast-catchup.m3u）
+        with open('unicast-catchup.m3u', 'w', encoding='utf-8') as f:
+            f.write(catchup_content)
+        print("✓ unicast-catchup.m3u 生成完成")
         
-        # 提取各个分类的频道
-        grep -A 1 '#EXTINF.*CGTN' multicast-temp1.m3u | grep -v '^--$' > cgtn-channels.m3u
-        grep -A 1 '#EXTINF.*CCTV1\|#EXTINF.*CCTV-1' multicast-temp1.m3u | grep -v '^--$' > cctv1-channels.m3u
-        grep -A 1 '#EXTINF.*山东卫视' multicast-temp1.m3u | grep -v '^--$' > shandong-channels.m3u
-        grep -A 1 '#EXTINF.*山东少儿' multicast-temp1.m3u | grep -v '^--$' > shandong-kids.m3u
-        grep -A 1 '#EXTINF.*CCTV4欧洲\|#EXTINF.*CCTV4美洲' multicast-temp1.m3u | grep -v '^--$' > cctv4-overseas.m3u
-        grep -A 1 '#EXTINF.*山东经济广播' multicast-temp1.m3u | grep -v '^--$' > radio-channels.m3u
+        print("处理 RTP 转换...")
+        # 处理 RTP 转换
+        rtp_content = re.sub(
+            r'rtsp://([^"\s\r\n]+)',
+            r'http://192.168.100.1:5140/rtsp/\1',
+            content
+        )
         
-        # 提取其他频道（排除已分类的）
-        grep -A 1 '#EXTINF' multicast-temp1.m3u | grep -v '^--$' > all-channels.m3u
-        grep -v -f <(cat cgtn-channels.m3u cctv1-channels.m3u shandong-channels.m3u shandong-kids.m3u cctv4-overseas.m3u radio-channels.m3u | grep -v '^#EXTINF' | sed 's/^/-e /') all-channels.m3u > other-channels.m3u
+        # 在文件开头添加 url-tvg 属性
+        rtp_content = re.sub(
+            r'^#EXTM3U',
+            r'#EXTM3U url-tvg="https://raw.githubusercontent.com/plsy1/epg/main/e/seven-days.xml.gz"',
+            rtp_content,
+            count=1
+        )
         
-        # 3. 修改分组名称
-        sed -i 's|group-title="[^"]*"|group-title="其他频道"|g' cgtn-channels.m3u
-        cp shandong-channels.m3u shandong-copy.m3u
-        sed -i 's|group-title="[^"]*"|group-title="央视频道"|g' shandong-copy.m3u
-        sed -i 's|group-title="[^"]*"|group-title="广播频道"|g' radio-channels.m3u
+        # 写入 RTP 文件（重命名为 unicast-rtp.m3u）
+        with open('unicast-rtp.m3u', 'w', encoding='utf-8') as f:
+            f.write(rtp_content)
+        print("✓ unicast-rtp.m3u 生成完成")
+        EOF
         
-        # 4. 按照规则组合文件
-        cat multicast-header.m3u > multicast-rtp.m3u
-        echo "" >> multicast-rtp.m3u
-        echo "# 央视频道" >> multicast-rtp.m3u
-        cat cctv1-channels.m3u >> multicast-rtp.m3u
-        cat shandong-copy.m3u >> multicast-rtp.m3u
-        echo "" >> multicast-rtp.m3u
-        echo "# 其他频道" >> multicast-rtp.m3u
-        cat other-channels.m3u >> multicast-rtp.m3u
-        cat shandong-channels.m3u >> multicast-rtp.m3u
-        cat cgtn-channels.m3u >> multicast-rtp.m3u
-        cat shandong-kids.m3u >> multicast-rtp.m3u
-        cat cctv4-overseas.m3u >> multicast-rtp.m3u
-        echo "" >> multicast-rtp.m3u
-        echo "# 广播频道" >> multicast-rtp.m3u
-        cat radio-channels.m3u >> multicast-rtp.m3u
-        
-        # 5. 清理临时文件
-        rm -f multicast-temp1.m3u multicast-header.m3u cgtn-channels.m3u cctv1-channels.m3u shandong-channels.m3u shandong-copy.m3u shandong-kids.m3u cctv4-overseas.m3u radio-channels.m3u all-channels.m3u other-channels.m3u
-        
-        echo "✓ multicast-rtp.m3u 生成完成"
-        echo "所有文件处理完成"
+        python3 process.py
         
     - name: Commit changes
       run: |
         git config --local user.name "github-actions[bot]"
         git config --local user.email "github-actions[bot]@users.noreply.github.com"
-        git add unicast-catchup.m3u unicast-rtp.m3u multicast-rtp.m3u
+        git add unicast-catchup.m3u unicast-rtp.m3u
         git commit -m "Update playlist files" || exit 0
         git push
