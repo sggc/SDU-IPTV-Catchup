@@ -1,69 +1,33 @@
-name: Update Playlist Files
+name: Update M3U Files Every 15 Minutes
 
 on:
   schedule:
-    - cron: '*/15 * * * *'  # 每15分钟运行一次
-  workflow_dispatch:  # 手动触发
+    - cron: '*/15 * * * *'  # 每15分钟执行一次
+  workflow_dispatch:        # 支持手动触发
 
 jobs:
-  update-playlists:
+  update:
     runs-on: ubuntu-latest
-    
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
-      
-    - name: Download source file
-      run: |
-        echo "下载源播放列表文件..."
-        curl -s -o source.m3u "https://raw.githubusercontent.com/sggc/SDU-IPTV-NEW/refs/heads/main/playlist.m3u"
-        echo "下载完成，文件大小: $(wc -l < source.m3u) 行"
-        
-    - name: Process files
-      run: |
-        echo "开始处理文件..."
-        
-        # 创建处理脚本
-        cat > process.py << 'EOF'
-        import re
-        
-        # 读取源文件
-        with open('source.m3u', 'r', encoding='utf-8') as f:
-            content = f.read()
-        
-        print("处理 catchup 参数...")
-        # 处理 catchup-source 参数
-        content = re.sub(
-            r'catchup-source="([^"]+?)\?tvdr=\{utc:YmdHMS\}GMT-\{utcend:YmdHMS\}GMT"',
-            r'catchup-source="\1?tvdr=${(b)yyyyMMddHHmmss}GMT-${(e)yyyyMMddHHmmss}GMT&r2h-seek-offset=-28800"',
-            content
-        )
-        
-        # 写入 catchup 文件
-        with open('playlist-catchup.m3u', 'w', encoding='utf-8') as f:
-            f.write(content)
-        print("✓ playlist-catchup.m3u 生成完成")
-        
-        print("处理 RTP 转换...")
-        # 处理 RTP 转换
-        content = re.sub(
-            r'rtsp://([^"\s\r\n]+)',
-            r'http://192.168.100.1:5140/rtsp/\1',
-            content
-        )
-        
-        # 写入 RTP 文件
-        with open('playlist-rtp.m3u', 'w', encoding='utf-8') as f:
-            f.write(content)
-        print("✓ playlist-rtp.m3u 生成完成")
-        EOF
-        
-        python3 process.py
-        
-    - name: Commit changes
-      run: |
-        git config --local user.name "github-actions[bot]"
-        git config --local user.email "github-actions[bot]@users.noreply.github.com"
-        git add playlist-catchup.m3u playlist-rtp.m3u
-        git commit -m "Update playlist files" || exit 0
-        git push
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install requests
+        run: pip install requests
+
+      - name: Download and process playlist
+        run: |
+          python scripts/process_m3u.py "https://raw.githubusercontent.com/sggc/SDU-IPTV-NEW/refs/heads/main/playlist.m3u"
+
+      - name: Commit and push if changed
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add unicast-catchup.m3u unicast-rtp.m3u
+          git diff --quiet || git commit -m "🤖 自动更新: $(date '+%Y-%m-%d %H:%M:%S')"
+          git push
