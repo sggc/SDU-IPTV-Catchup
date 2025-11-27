@@ -2,8 +2,8 @@ name: Auto Update M3U Playlist
 
 on:
   schedule:
-    - cron: '*/15 * * * *'   # 每15分钟一次
-  workflow_dispatch:           # 支持手动运行
+    - cron: '*/15 * * * *'  # 每15分钟运行一次
+  workflow_dispatch:          # 手动触发
 
 jobs:
   update:
@@ -17,26 +17,21 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10'   # 明确版本号，避免版本问题
+          python-version: '3.10'
 
       - name: Install dependencies
         run: pip install requests
 
-      - name: Run first script - process_m3u.py
-        run: python .github/scripts/process_m3u.py
+      - name: Run processing scripts
+        run: |
+          python .github/scripts/process_m3u.py
+          python .github/scripts/process_multicast.py
 
-      - name: Commit and push if changes
+      - name: Commit and push if files changed
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
-          commit_message: Auto update unicast-catchup.m3u and unicast-rtp.m3u
-          file_pattern: unicast-*.m3u
-
-      - name: Run second script - process_multicast.py
-        run: python .github/scripts/process_multicast.py
-
-      # 可选：如果第二个脚本也生成了需要提交的文件
-      # - name: Commit and push multicast changes
-      #   uses: stefanzweifel/git-auto-commit-action@v5
-      #   with:
-      #     commit_message: Auto update multicast playlist
-      #     file_pattern: multicast-*.m3u
+          commit_message: Auto update IPTV playlists
+          file_pattern: |
+            unicast-*.m3u
+            multicast-*.m3u
+          # 仅当文件内容变化时才会提交
