@@ -20,8 +20,8 @@ jobs:
           python-version: '3.x'
 
       - name: Install dependencies
-        run: |
-          pip install requests pytz   # 加上 pytz
+        run: pip install requests
+
 
       - name: Fetch and process playlist
         run: |
