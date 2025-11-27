@@ -17,24 +17,26 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.x'
+          python-version: '3.10'   # 明确版本号，避免版本问题
 
       - name: Install dependencies
         run: pip install requests
 
-
-      - name: Fetch and process playlist
-        run: |
-          python .github/scripts/process_m3u.py
-      
-      - name: Process multicast playlist
-        run: python .github/scripts/process_multicast.py
-
+      - name: Run first script - process_m3u.py
+        run: python .github/scripts/process_m3u.py
 
       - name: Commit and push if changes
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
           commit_message: Auto update unicast-catchup.m3u and unicast-rtp.m3u
           file_pattern: unicast-*.m3u
-     
-      
+
+      - name: Run second script - process_multicast.py
+        run: python .github/scripts/process_multicast.py
+
+      # 可选：如果第二个脚本也生成了需要提交的文件
+      # - name: Commit and push multicast changes
+      #   uses: stefanzweifel/git-auto-commit-action@v5
+      #   with:
+      #     commit_message: Auto update multicast playlist
+      #     file_pattern: multicast-*.m3u
