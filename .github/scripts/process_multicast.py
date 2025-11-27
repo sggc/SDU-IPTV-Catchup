@@ -2,7 +2,7 @@ import requests
 import os
 
 # 源播放列表 URL
-PLAYLIST_URL = "https://raw.githubusercontent.com/jedisct1/proxytv/main/playlist.m3u"
+PLAYLIST_URL = "https://raw.githubusercontent.com/plsy1/iptv/refs/heads/main/multicast/multicast-weifang.m3u"
 
 # 输出文件
 OUTPUT_FILE = 'multicast-rtp.m3u'
