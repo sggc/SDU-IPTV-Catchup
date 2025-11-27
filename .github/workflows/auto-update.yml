@@ -26,6 +26,10 @@ jobs:
       - name: Fetch and process playlist
         run: |
           python .github/scripts/process_m3u.py
+      
+      - name: Process multicast playlist
+        run: python .github/scripts/process_multicast.py
+
 
       - name: Commit and push if changes
         uses: stefanzweifel/git-auto-commit-action@v5
@@ -33,6 +37,4 @@ jobs:
           commit_message: Auto update unicast-catchup.m3u and unicast-rtp.m3u
           file_pattern: unicast-*.m3u
      
-      - name: Process multicast playlist
-        run: python .github/scripts/process_multicast.py
-
+      
